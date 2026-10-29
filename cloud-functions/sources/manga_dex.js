@@ -1,698 +1,787 @@
-/** @type {import('./_venera_.js')} */
-class MangaDex extends ComicSource {
-    // Note: The fields which are marked as [Optional] should be removed if not used
 
-    // name of the source
-    name = "MangaDex"
+class GuaziManhua extends ComicSource {
+    name = "瓜子漫画"
+    key = "guazimanhua"
+    version = "1.0.4"
+    minAppVersion = "1.0.0"
+    url = ""
 
-    // unique id of the source
-    key = "manga_dex"
+    get baseUrl() {
+        return "https://www.guazimanhua.com"
+    }
 
-    version = "1.1.0"
+    // ========== 工具函数 ==========
 
-    minAppVersion = "1.4.0"
+    absoluteUrl(url) {
+        if (!url) return ""
+        url = String(url).trim()
+        if (!url) return ""
+        if (url.startsWith("//")) return "https:" + url
+        if (url.startsWith("http://") || url.startsWith("https://")) return url
+        if (url.startsWith("/")) return this.baseUrl + url
+        return this.baseUrl + "/" + url
+    }
 
-    // update url
-    url = "https://cdn.jsdelivr.net/gh/venera-app/venera-configs@main/manga_dex.js"
+    cleanText(value) {
+        if (value == null) return ""
+        return String(value).replace(/\s+/g, " ").trim()
+    }
 
-    comicsPerPage = 20
+    comicIdFromHref(href) {
+        if (!href) return ""
+        let m = String(href).match(/[?&]id=(\d+)/i)
+        return m ? m[1] : ""
+    }
 
-    api = {
-        parseComic: (data) => {
-            let id = data['id']
-            let titles = {}
-            let mainTitles = data['attributes']['title']
-            for (let lang of Object.keys(mainTitles)) {
-                titles[lang] = mainTitles[lang]
+    /**
+     * 从HTML中提取JSON-LD数据
+     */
+    extractJsonLd(html) {
+        const results = []
+        try {
+            const regex = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
+            let match
+            while ((match = regex.exec(html)) !== null) {
+                try {
+                    results.push(JSON.parse(match[1].trim()))
+                } catch (e) {}
             }
-            for (let at of data['attributes']['altTitles']) {
-                for (let lang of Object.keys(at)) {
-                    if (titles[lang] === undefined) {
-                        titles[lang] = at[lang]
-                    }
-                }
-            }
-            let locale = APP.locale
-            let mainTitle = ''
-            let firstTitle = titles[Object.keys(titles)[0]]
-            if (locale.startsWith('en')) {
-                mainTitle = titles['en'] || titles['ja'] || firstTitle
-            } else if (locale.startsWith('zh_CN')) {
-                mainTitle = titles['zh'] || titles['zh-hk'] || titles['zh-tw'] || titles['ja'] || firstTitle
-            } else if (locale.startsWith('zh_TW')) {
-                mainTitle = titles['zh-hk'] || titles['zh-tw'] || titles['zh'] || titles['ja'] || firstTitle
-            }
-            let tags = []
-            for (let tag of data['attributes']['tags']) {
-                tags.push(tag['attributes']['name']['en'])
-            }
-            let cover = data['relationships'].find((e) => e['type'] === 'cover_art')?.['attributes']['fileName']
-            if (cover) {
-                cover = `https://mangadex.org/covers/${id}/${cover}.256.jpg`
-            } else {
-                cover = ""
-            }
-            let description = data['attributes']['description']['en']
-            let createTime = data['attributes']['createdAt']
-            let updateTime = data['attributes']['updatedAt']
-            let status = data['attributes']['status']
-            let authors = []
-            let artists = []
-            for (let rel of data['relationships']) {
-                if (rel['type'] === 'author') {
-                    let name = rel['attributes']['name'];
-                    let id = rel['id']
-                    authors.push(name)
-                    this.authors[name] = id
-                } else if (rel['type'] === 'artist') {
-                    let name = rel['attributes']['name'];
-                    let id = rel['id']
-                    artists.push(name)
-                    this.artists[name] = id
-                }
-            }
+        } catch (e) {}
+        return results
+    }
 
-            return {
-                id: id,
-                title: mainTitle,
-                subtitle: authors.at(0),
-                titles: titles,
-                cover: cover,
-                tags: tags,
-                description: description,
-                createTime: createTime,
-                updateTime: updateTime,
-                status: status,
-                authors: authors,
-                artists: artists,
+    /**
+     * 从JSON-LD中查找指定类型
+     */
+    findJsonLdType(jsonLdList, type) {
+        for (const data of jsonLdList) {
+            const graph = data["@graph"] || [data]
+            for (const item of graph) {
+                if (item["@type"] === type) return item
+                if (Array.isArray(item["@type"]) && item["@type"].includes(type)) return item
             }
-        },
-        getPopular: async (page) => {
-            let time = new Date()
-            time = new Date(time.getTime() - 30 * 24 * 60 * 60 * 1000)
-            let popularUrl = `https://api.mangadex.org/manga?` +
-                `includes[]=cover_art&` +
-                `includes[]=artist&` +
-                `includes[]=author&` +
-                `order[followedCount]=desc&` +
-                `hasAvailableChapters=true&` +
-                `createdAtSince=${time.toISOString().substring(0, 19)}&` +
-                `limit=${this.comicsPerPage}`
-            if (page && page > 1) {
-                popularUrl += `&offset=${(page - 1) * this.comicsPerPage}`
+        }
+        return null
+    }
+
+    imageUrl(element) {
+        if (!element) return ""
+        let attrs = ["data-original", "data-src", "data-lazy-src", "data-url", "src"]
+        for (let name of attrs) {
+            let value = element.attributes[name]
+            if (value && !value.startsWith("data:image")) {
+                return this.absoluteUrl(value)
             }
-            let res = await fetch(popularUrl)
-            let data = await res.json()
-            let total = data['total']
-            let maxPage = Math.ceil(total / this.comicsPerPage)
-            let comics = []
-            for (let comic of data['data']) {
-                comics.push(this.api.parseComic(comic))
-            }
-            return {
-                comics: comics,
-                maxPage: maxPage
-            }
-        },
-        getRecent: async (page) => {
-            let recentUrl = `https://api.mangadex.org/manga?` +
-                `includes[]=cover_art&` +
-                `includes[]=artist&` +
-                `includes[]=author&` +
-                `order[createdAt]=desc&` +
-                `hasAvailableChapters=true&` +
-                `limit=${this.comicsPerPage}`
-            if (page && page > 1) {
-                recentUrl += `&offset=${(page - 1) * this.comicsPerPage}`
-            }
-            let res = await fetch(recentUrl)
-            let data = await res.json()
-            let total = data['total']
-            let maxPage = Math.ceil(total / this.comicsPerPage)
-            let comics = []
-            for (let comic of data['data']) {
-                comics.push(this.api.parseComic(comic))
-            }
-            return {
-                comics: comics,
-                maxPage: maxPage
-            }
-        },
-        getUpdated: async (page) => {
-            let updatedUrl = `https://api.mangadex.org/manga?` +
-                `includes[]=cover_art&` +
-                `includes[]=artist&` +
-                `includes[]=author&` +
-                `order[latestUploadedChapter]=desc&` +
-                `contentRating[]=safe&` +
-                `contentRating[]=suggestive&` +
-                `hasAvailableChapters=true&` +
-                `limit=${this.comicsPerPage}`
-            if (page && page > 1) {
-                updatedUrl += `&offset=${(page - 1) * this.comicsPerPage}`
-            }
-            let res = await fetch(updatedUrl)
-            let data = await res.json()
-            let total = data['total']
-            let maxPage = Math.ceil(total / this.comicsPerPage)
-            let comics = []
-            for (let comic of data['data']) {
-                comics.push(this.api.parseComic(comic))
-            }
-            return {
-                comics: comics,
-                maxPage: maxPage
-            }
+        }
+        return ""
+    }
+
+    // ========== 卡片解析（精确选择器版本） ==========
+
+    /**
+     * 解析搜索/分类页的标准卡片 article.card
+     */
+    parseStandardCard(card) {
+        try {
+            const link = card.querySelector("a.cover-wrap")
+            const titleEl = card.querySelector("h3 a")
+            const coverEl = card.querySelector("img.cover")
+            const metaEl = card.querySelector(".meta")
+
+            if (!link || !titleEl) return null
+
+            const id = this.comicIdFromHref(link.attributes.href)
+            if (!id) return null
+
+            const title = this.cleanText(titleEl.text)
+            if (!title) return null
+
+            const cover = coverEl ? this.imageUrl(coverEl) : ""
+            const subTitle = this.cleanText(metaEl?.text || "")
+
+            return new Comic({
+                id: String(id),
+                title: String(title),
+                cover: String(cover),
+                subTitle: String(subTitle)
+            })
+        } catch (e) {
+            return null
         }
     }
 
-    // Account feature is not implemented yet
-    // TODO: implement account feature
-    // account = {}
+    /**
+     * 解析首页卡片（hot-art / mobile-comic-art）
+     */
+    parseHomeCard(card, artSelector) {
+        try {
+            const link = card.querySelector(artSelector)
+            const titleEl = card.querySelector("h3 a")
+            const coverEl = card.querySelector("img.cover")
+            const subEl = card.querySelector("p")
 
-    // explore page list
+            if (!link || !titleEl) return null
+
+            const id = this.comicIdFromHref(link.attributes.href)
+            if (!id) return null
+
+            const title = this.cleanText(titleEl.text)
+            if (!title) return null
+
+            const cover = coverEl ? this.imageUrl(coverEl) : ""
+            const subTitle = this.cleanText(subEl?.text || "")
+
+            return new Comic({
+                id: String(id),
+                title: String(title),
+                cover: String(cover),
+                subTitle: String(subTitle)
+            })
+        } catch (e) {
+            return null
+        }
+    }
+
+    /**
+     * 解析搜索/分类页漫画列表（精确选择器，不遍历所有a标签）
+     */
+    parseComicList(document) {
+        const result = []
+        const seen = new Set()
+
+        // 优先使用标准卡片选择器
+        let cards = document.querySelectorAll("section.grid article.card")
+        if (cards.length === 0) {
+            // 兜底：首页的各种卡片
+            cards = document.querySelectorAll("#hot article.comic-card, .mobile-category-card-section article.mobile-comic-card, [data-seo-revisit-links] article.revisit-card")
+        }
+
+        for (const card of cards) {
+            let comic = null
+            if (card.querySelector("a.cover-wrap")) {
+                comic = this.parseStandardCard(card)
+            } else if (card.querySelector("a.hot-art")) {
+                comic = this.parseHomeCard(card, "a.hot-art")
+            } else if (card.querySelector("a.mobile-comic-art")) {
+                comic = this.parseHomeCard(card, "a.mobile-comic-art")
+            }
+
+            if (comic && comic.id && !seen.has(comic.id)) {
+                seen.add(comic.id)
+                result.push(comic)
+            }
+        }
+
+        return result
+    }
+
+    parseMaxPage(document, currentPage) {
+        let maxPage = currentPage || 1
+        try {
+            const pager = document.querySelector("nav.pager")
+            if (pager) {
+                const links = pager.querySelectorAll("a")
+                for (const a of links) {
+                    const text = this.cleanText(a.text)
+                    const n = parseInt(text)
+                    if (!isNaN(n) && n > maxPage && n < 10000) {
+                        maxPage = n
+                    }
+                }
+            }
+        } catch (e) {}
+        return maxPage
+    }
+
+    // ========== 首页推荐（数组格式，保持可导入） ==========
+
     explore = [
         {
-            // title of the page.
-            // title is used to identify the page, it should be unique
-            title: "Manga Dex",
-
-            /// multiPartPage or multiPageComicList or mixed
-            type: "multiPartPage",
-
-            load: async (page) => {
-                let res = await Promise.all([
-                    this.api.getPopular(page),
-                    this.api.getRecent(page),
-                    this.api.getUpdated(page)
-                ])
-                let titles = ["Popular", "Recent", "Updated"]
-                let viewMore = [
-                    {
-                        page: "search",
-                        attributes: {
-                            options: ["popular", "any", "any"],
-                        },
-                    },
-                    {
-                        page: "search",
-                        attributes: {
-                            options: ["recent", "any", "any"],
-                        },
-                    },
-                    {
-                        page: "search",
-                        attributes: {
-                            options: ["updated", "any", "any"],
-                        },
+            title: "瓜子漫画",
+            type: "singlePageWithMultiPart",
+            load: async () => {
+                try {
+                    let res = await Network.get(this.baseUrl + "/")
+                    if (res.status !== 200) {
+                        return { "推荐": [] }
                     }
-                ]
-                let parts = []
-                for (let i = 0; i < res.length; i++) {
-                    let part = res[i]
-                    parts.push({
-                        title: titles[i],
-                        comics: part.comics,
-                        viewMore: viewMore[i]
-                    })
+
+                    let document = new HtmlDocument(res.body)
+                    try {
+                        let result = {}
+
+                        // 1. 今日热门
+                        try {
+                            const hotSection = document.querySelector("#hot")
+                            if (hotSection) {
+                                const comics = []
+                                const cards = hotSection.querySelectorAll("article.comic-card")
+                                for (const card of cards) {
+                                    const comic = this.parseHomeCard(card, "a.hot-art")
+                                    if (comic) comics.push(comic)
+                                }
+                                if (comics.length > 0) result["今日热门"] = comics
+                            }
+                        } catch (e) {}
+
+                        // 2. 移动端分类区块（热血冒险、恋爱古风等）
+                        try {
+                            const mobileSections = document.querySelectorAll(".mobile-category-card-section")
+                            for (const section of mobileSections) {
+                                const titleEl = section.querySelector(".section-title")
+                                if (!titleEl) continue
+                                let title = this.cleanText(titleEl.text)
+                                title = title.replace(/^(local_fire_department|schedule|auto_stories|leaderboard)\s*/, "").trim()
+                                if (!title) continue
+
+                                const comics = []
+                                const cards = section.querySelectorAll("article.mobile-comic-card")
+                                for (const card of cards) {
+                                    const comic = this.parseHomeCard(card, "a.mobile-comic-art")
+                                    if (comic) comics.push(comic)
+                                }
+                                if (comics.length > 0) result[title] = comics
+                            }
+                        } catch (e) {}
+
+                        // 3. 近期值得重读
+                        try {
+                            const revisitSection = document.querySelector("[data-seo-revisit-links]")
+                            if (revisitSection) {
+                                const comics = []
+                                const cards = revisitSection.querySelectorAll("article.revisit-card")
+                                for (const card of cards) {
+                                    const comic = this.parseHomeCard(card, "a.hot-art")
+                                    if (comic) comics.push(comic)
+                                }
+                                if (comics.length > 0) result["近期值得重读"] = comics
+                            }
+                        } catch (e) {}
+
+                        if (Object.keys(result).length === 0) {
+                            return { "推荐": [] }
+                        }
+                        return result
+                    } finally {
+                        document.dispose()
+                    }
+                } catch (e) {
+                    return { "推荐": [] }
                 }
-                return parts
-            },
+            }
         }
     ]
 
-    // categories
+    // ========== 分类（保持GPT的可导入结构） ==========
+
     category = {
-        /// title of the category page, used to identify the page, it should be unique
-        title: "MangaDex",
+        title: "瓜子漫画",
         parts: [
             {
-                // title of the part
-                name: "Tags",
-
-                // fixed or random or dynamic
-                // if random, need to provide `randomNumber` field, which indicates the number of comics to display at the same time
-                // if dynamic, need to provide `loader` field, which indicates the function to load comics
-                type: "dynamic",
-
-                // number of comics to display at the same time
-                // randomNumber: 5,
-
-                // load function for dynamic type
-                        loader: () => {
-                    let categories = []
-                    for (let tag of Object.keys(this.tags)) {
-                        categories.push({
-                            label: tag,
-                            target: {
-                                        action: "category",
-                                        keyword: tag,
-                                        param: this.tags[tag],
-                            }
-                        })
-                    }
-                    return categories
-                }
+                name: "题材",
+                type: "fixed",
+                categories: [
+                    "全部", "热血", "玄幻", "都市", "恋爱", "古风",
+                    "穿越", "校园", "搞笑", "冒险", "悬疑", "科幻",
+                    "灵异", "动作", "霸总", "耽美", "奇幻", "系统", "逆袭"
+                ],
+                itemType: "category",
+                categoryParams: [
+                    "",
+                    "tag=热血", "tag=玄幻", "tag=都市", "tag=恋爱", "tag=古风",
+                    "tag=穿越", "tag=校园", "tag=搞笑", "tag=冒险", "tag=悬疑", "tag=科幻",
+                    "tag=灵异", "tag=动作", "tag=霸总", "tag=耽美", "tag=奇幻", "tag=系统", "tag=逆袭"
+                ]
             }
         ],
-        // enable ranking page
-        enableRankingPage: false,
+        enableRankingPage: true
     }
 
     categoryComics = {
-        load: async (category, param, options = [], page = 1) => {
-            if (!param) {
-                throw new Error("No tag id provided for category comics")
-            }
-
-            const parseOption = (option, fallback) => {
-                if (option === undefined || option === null || option === "") {
-                    return fallback
-                }
-                let value = option.split("-")[0]
-                return value || fallback
-            }
-
-            const sortOption = parseOption(options[0], "popular")
-            const ratingOption = parseOption(options[1], "any")
-            const statusOption = parseOption(options[2], "any")
-
-            let params = [
-                "includes[]=cover_art",
-                "includes[]=artist",
-                "includes[]=author",
-                "hasAvailableChapters=true",
-                `limit=${this.comicsPerPage}`,
-                `includedTags[]=${encodeURIComponent(param)}`
-            ]
-
-            if (page && page > 1) {
-                params.push(`offset=${(page - 1) * this.comicsPerPage}`)
-            }
-
-            if (sortOption !== "any") {
-                const orderMap = {
-                    popular: "followedCount",
-                    follows: "followedCount",
-                    recent: "createdAt",
-                    updated: "latestUploadedChapter",
-                    rating: "rating"
-                }
-                const orderKey = orderMap[sortOption]
-                if (orderKey) {
-                    params.push(`order[${orderKey}]=desc`)
-                }
-            }
-
-            let ratingList
-            if (ratingOption === "any") {
-                ratingList = ["safe", "suggestive", "erotica"]
-            } else {
-                ratingList = [ratingOption]
-            }
-            for (let rating of ratingList) {
-                params.push(`contentRating[]=${encodeURIComponent(rating)}`)
-            }
-
-            if (statusOption !== "any") {
-                params.push(`status[]=${encodeURIComponent(statusOption)}`)
-            }
-
-            let url = `https://api.mangadex.org/manga?${params.join("&")}`
-            let res = await fetch(url)
-            if (!res.ok) {
-                throw new Error("Network response was not ok")
-            }
-            let data = await res.json()
-            let total = data['total'] || 0
-            let comics = []
-            for (let comic of data['data'] || []) {
-                comics.push(this.api.parseComic(comic))
-            }
-            let maxPage = total ? Math.ceil(total / this.comicsPerPage) : (comics.length < this.comicsPerPage ? page : page + 1)
-            return {
-                comics: comics,
-                maxPage: maxPage
-            }
-        },
-        optionList: [
-            {
-                options: [
-                    "any-Any",
-                    "popular-Popular",
-                    "recent-Recent",
-                    "updated-Updated",
-                    "rating-Rating",
-                    "follows-Follows"
-                ]
-            },
-            {
-                options: [
-                    "any-Any",
-                    "safe-Safe",
-                    "suggestive-Suggestive",
-                    "erotica-Erotica"
-                ]
-            },
-            {
-                options: [
-                    "any-Any",
-                    "ongoing-Ongoing",
-                    "completed-Completed",
-                    "hiatus-Hiatus",
-                    "cancelled-Cancelled"
-                ]
-            }
-        ]
-    }
-
-    /// search related
-    search = {
-        /**
-         * load search result
-         * @param keyword {string}
-         * @param options {string[]} - options from optionList
-         * @param page {number}
-         * @returns {Promise<{comics: Comic[], maxPage: number}>}
-         */
-        load: async (keyword, options, page) => {
-            let order = ""
-            if (options[0] !== "any") {
-                order = {
-                    "popular": `order[followedCount]=desc&`,
-                    "recent": `order[createdAt]=desc&`,
-                    "updated": `order[latestUploadedChapter]=desc&`,
-                    "rating": `order[rating]=desc&`,
-                    "follows": `order[followedCount]=desc&`
-                }[options[0]]
-            }
-            let contentRating = ""
-            if (options[1] !== "any") {
-                contentRating = `contentRating[]=${options[1]}&`
-            }
-            let status = ""
-            if (options[2] !== "any") {
-                status = `status[]=${options[2]}&`
-            }
-            let url = `https://api.mangadex.org/manga?` +
-                `includes[]=cover_art&` +
-                `includes[]=artist&` +
-                `includes[]=author&` +
-                order +
-                contentRating +
-                status +
-                `hasAvailableChapters=true&` +
-                `limit=${this.comicsPerPage}`
-            if (page && page > 1) {
-                url += `&offset=${(page - 1) * this.comicsPerPage}`
-            }
-            if (keyword) {
-                let splits = keyword.split(" ")
-                let reformated = []
-                for (let s of splits) {
-                    if (s === "") {
-                        continue
-                    }
-                    if (s.startsWith('tag:')) {
-                        let tag = s.substring(4)
-                        tag = tag.replaceAll('_', ' ')
-                        let id = this.tags[tag]
-                        if (id !== undefined) {
-                            url += `&includedTags[]=${id}`
-                        } else {
-                            reformated.push(s)
-                        }
-                    } else if (s.startsWith('author:')) {
-                        let author = s.substring(7)
-                        author = author.replaceAll('_', ' ')
-                        let id = this.authors[author]
-                        if (id !== undefined) {
-                            url += `&authorOrArtist=${id}`
-                        } else {
-                            reformated.push(s)
-                        }
-                    } else if (s.startsWith('artist:')) {
-                        let artist = s.substring(7)
-                        artist = artist.replaceAll('_', ' ')
-                        let id = this.artists[artist]
-                        if (id !== undefined) {
-                            url += `&authorOrArtist=${id}`
-                        } else {
-                            reformated.push(s)
-                        }
-                    } else {
-                        reformated.push(s)
+        load: async (category, param, options, page) => {
+            try {
+                let query = []
+                if (param) query.push(param)
+                if (options && options.length > 0) {
+                    for (let option of options) {
+                        if (option) query.push(option)
                     }
                 }
-                keyword = reformated.join(" ")
-                if (keyword !== "")
-                    url += `&title=${keyword}`
-            }
-            let res = await fetch(url)
-            if (!res.ok) {
-                throw new Error("Network response was not ok")
-            }
-            let data = await res.json()
-            let total = data['total']
-            let maxPage = Math.ceil(total / this.comicsPerPage)
-            let comics = []
-            for (let comic of data['data']) {
-                comics.push(this.api.parseComic(comic))
-            }
-            return {
-                comics: comics,
-                maxPage: maxPage
+                query.push("page=" + (page || 1))
+                let url = this.baseUrl + "/category.php?" + query.join("&")
+
+                let res = await Network.get(url)
+                if (res.status !== 200) {
+                    return { comics: [], maxPage: page || 1 }
+                }
+
+                let document = new HtmlDocument(res.body)
+                try {
+                    return {
+                        comics: this.parseComicList(document),
+                        maxPage: this.parseMaxPage(document, page || 1)
+                    }
+                } finally {
+                    document.dispose()
+                }
+            } catch (e) {
+                return { comics: [], maxPage: page || 1 }
             }
         },
 
-        // provide options for search
         optionList: [
             {
-                label: "Sort By",
-                type: "select",
                 options: [
-                    "any-Any",
-                    "popular-Popular",
-                    "recent-Recent",
-                    "updated-Updated",
-                    "rating-Rating",
-                    "follows-Follows",
-                ],
-            },
-            {
-                label: "Content Rating",
-                type: "select",
-                options: [
-                    "any-Any",
-                    "safe-Safe",
-                    "suggestive-Suggestive",
-                    "erotica-Erotica",
+                    "is_end=0-全部",
+                    "is_end=2-连载",
+                    "is_end=1-完结"
                 ]
             },
             {
-                label: "Status",
-                type: "select",
                 options: [
-                    "any-Any",
-                    "ongoing-Ongoing",
-                    "completed-Completed",
-                    "hiatus-Hiatus",
-                    "cancelled-Cancelled",
+                    "sort=update-最新",
+                    "sort=hits-人气",
+                    "sort=score-评分"
                 ]
-            },
+            }
         ],
 
-        // enable tags suggestions
-        enableTagsSuggestions: false,
+        ranking: {
+            options: [
+                "hits-人气",
+                "score-评分",
+                "update-更新"
+            ],
+            load: async (option, page) => {
+                try {
+                    let sort = option || "hits"
+                    let res = await Network.get(
+                        this.baseUrl + "/category.php?sort=" + encodeURIComponent(sort) +
+                        "&page=" + (page || 1)
+                    )
+                    if (res.status !== 200) {
+                        return { comics: [], maxPage: page || 1 }
+                    }
+                    let document = new HtmlDocument(res.body)
+                    try {
+                        return {
+                            comics: this.parseComicList(document),
+                            maxPage: this.parseMaxPage(document, page || 1)
+                        }
+                    } finally {
+                        document.dispose()
+                    }
+                } catch (e) {
+                    return { comics: [], maxPage: page || 1 }
+                }
+            }
+        }
     }
 
-    /// single comic related
+    // ========== 搜索（保持3参数结构） ==========
+
+    search = {
+        load: async (keyword, options, page) => {
+            try {
+                let url = this.baseUrl + "/category.php?keyword=" + encodeURIComponent(keyword || "") + "&page=" + (page || 1)
+
+                let res = await Network.get(url)
+                if (res.status !== 200) {
+                    return { comics: [], maxPage: page || 1 }
+                }
+
+                let document = new HtmlDocument(res.body)
+                try {
+                    return {
+                        comics: this.parseComicList(document),
+                        maxPage: this.parseMaxPage(document, page || 1)
+                    }
+                } finally {
+                    document.dispose()
+                }
+            } catch (e) {
+                return { comics: [], maxPage: page || 1 }
+            }
+        },
+
+        optionList: []
+    }
+
+    // ========== 漫画详情与阅读 ==========
+
     comic = {
-        getComic: async (id) => {
-            let res = await fetch(`https://api.mangadex.org/manga/${id}?includes[]=cover_art&includes[]=artist&includes[]=author`)
-            if (!res.ok) {
-                throw new Error("Network response was not ok")
-            }
-            let data = await res.json()
-            return this.api.parseComic(data['data'])
-
-        },
-        getChapters: async (id) => {
-            let res = await fetch(`https://api.mangadex.org/manga/${id}/feed?limit=500&translatedLanguage[]=en&order[chapter]=asc`)
-            if (!res.ok) {
-                throw new Error("Network response was not ok")
-            }
-            let data = await res.json()
-            let chapters = new Map()
-            for (let chapter of data['data']) {
-                let id = chapter['id']
-                let chapterId = chapter['attributes']['chapter']
-                let title = chapter['attributes']['title']
-                if (title) {
-                    title = `${chapterId}: ${title}`
-                } else {
-                    title = chapterId
-                }
-                let volume = chapter['attributes']['volume']
-                if (volume) {
-                    volume = `Volume ${volume}`
-                } else {
-                    volume = "No Volume"
-                }
-                if (chapters.get(volume) === undefined) {
-                    chapters.set(volume, new Map())
-                }
-                chapters.get(volume).set(id, title)
-            }
-            return chapters
-        },
-        getStats: async (id) => {
-            let res = await fetch(`https://api.mangadex.org/statistics/manga/${id}`)
-            if (!res.ok) {
-                throw new Error("Network response was not ok")
-            }
-            let data = await res.json()
-            return {
-                comments: data['statistics'][id]['comments']?.['repliesCount'] || 0,
-                follows: data['statistics'][id]['follows'] || 0,
-                rating: data['statistics'][id]['rating']['average'] || 0,
-            }
-        },
-        /**
-         * load comic info
-         * @param id {string}
-         * @returns {Promise<ComicDetails>}
-         */
         loadInfo: async (id) => {
-            let res = await Promise.all([
-                this.comic.getComic(id),
-                this.comic.getChapters(id),
-                this.comic.getStats(id)
-            ])
-            let comic = res[0]
-            let chapters = res[1]
-            let stats = res[2]
+            try {
+                let comicId = String(id || "").match(/\d+/)?.[0] || String(id || "")
+                if (!comicId) {
+                    return this._emptyDetails(id)
+                }
 
-            return new ComicDetails({
-                id: comic.id,
-                title: comic.title,
-                subtitle: comic.subtitle,
-                cover: comic.cover,
-                tags: {
-                    "Tags": comic.tags,
-                    "Status": comic.status,
-                    "Authors": comic.authors,
-                    "Artists": comic.artists,
-                },
-                description: comic.description,
-                updateTime: comic.updateTime,
-                uploadTime: comic.createTime,
-                status: comic.status,
-                chapters: chapters,
-                stars: (stats.rating || 0) / 2,
-                url: `https://mangadex.org/title/${comic.id}`,
-            })
+                let res = await Network.get(this.baseUrl + "/comic.php?id=" + comicId)
+                if (res.status !== 200) {
+                    return this._emptyDetails(comicId)
+                }
+
+                let html = res.body
+                let document = new HtmlDocument(html)
+                try {
+                    // 检查是否是错误页
+                    let bodyText = this.cleanText(document.querySelector("body")?.text || "")
+                    if (/漫画不存在|不存在或章节已被删除|页面不存在/i.test(bodyText)) {
+                        return this._emptyDetails(comicId)
+                    }
+
+                    // 优先从JSON-LD提取
+                    const jsonLdList = this.extractJsonLd(html)
+                    let title = ""
+                    let cover = ""
+                    let description = ""
+                    let author = ""
+                    let tags = []
+                    let updateTime = ""
+                    let chapters = new Map()
+
+                    // 提取 ComicStory
+                    const comicStory = this.findJsonLdType(jsonLdList, "ComicStory")
+                    if (comicStory) {
+                        title = this.cleanText(comicStory.name || "")
+                        cover = this.absoluteUrl(comicStory.image || "")
+                        description = this.cleanText(comicStory.description || "")
+                        author = this.cleanText(comicStory.author?.name || "")
+                        updateTime = this.cleanText(comicStory.dateModified || comicStory.datePublished || "")
+                        if (Array.isArray(comicStory.genre)) {
+                            tags = comicStory.genre.map(t => this.cleanText(t)).filter(t => t)
+                        }
+                    }
+
+                    // 优先从HTML的章节列表容器提取（完整、无重复、干净）
+                    // 容器：div.mobile-chapter-grid[data-mobile-chapter-list]
+                    try {
+                        const chapterGrid = document.querySelector('div.mobile-chapter-grid[data-mobile-chapter-list]')
+                        if (chapterGrid) {
+                            const chapterLinks = chapterGrid.querySelectorAll('a[href*="chapter.php"]')
+                            // HTML中是倒序（最新在前），需要反转成正序
+                            const reversedLinks = Array.from(chapterLinks).reverse()
+                            for (const link of reversedLinks) {
+                                try {
+                                    const href = link.attributes.href || ""
+                                    const chapterId = this.comicIdFromHref(href)
+                                    // 清理章节名称：去掉换行、多余空格、"阅读"后缀
+                                    let chapterName = this.cleanText(link.text || "")
+                                    chapterName = chapterName.replace(/\s*阅读\s*$/, "").trim()
+                                    if (chapterId && chapterName && !chapters.has(chapterId)) {
+                                        chapters.set(String(chapterId), String(chapterName))
+                                    }
+                                } catch (e) {}
+                            }
+                        }
+                    } catch (e) {}
+
+                    // HTML兜底：如果容器没找到，从JSON-LD提取（只有50章，不完整）
+                    if (chapters.size === 0) {
+                        try {
+                            for (const data of jsonLdList) {
+                                const graph = data["@graph"] || [data]
+                                for (const item of graph) {
+                                    if (item["@type"] === "ItemList" && Array.isArray(item.itemListElement)) {
+                                        const firstUrl = item.itemListElement[0]?.url || ""
+                                        if (firstUrl.includes("chapter.php")) {
+                                            for (const listItem of item.itemListElement) {
+                                                try {
+                                                    const chapterUrl = listItem.url || ""
+                                                    const chapterId = this.comicIdFromHref(chapterUrl)
+                                                    const chapterName = this.cleanText(listItem.name || "")
+                                                    if (chapterId && chapterName && !chapters.has(chapterId)) {
+                                                        chapters.set(String(chapterId), String(chapterName))
+                                                    }
+                                                } catch (e) {}
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } catch (e) {}
+                    }
+
+                    // 最后兜底：从全页a标签提取（去重、过滤按钮）
+                    if (chapters.size === 0) {
+                        try {
+                            const chapterLinks = document.querySelectorAll('a[href*="chapter.php"]')
+                            for (const link of chapterLinks) {
+                                try {
+                                    const href = link.attributes.href || ""
+                                    const chapterId = this.comicIdFromHref(href)
+                                    let chapterName = this.cleanText(link.text || "")
+                                    // 过滤掉按钮文本
+                                    if (!chapterName || /开始阅读|从第.*章开始阅读|继续阅读/.test(chapterName)) continue
+                                    chapterName = chapterName.replace(/\s*阅读\s*$/, "").trim()
+                                    if (chapterId && chapterName && !chapters.has(chapterId)) {
+                                        chapters.set(String(chapterId), String(chapterName))
+                                    }
+                                } catch (e) {}
+                            }
+                        } catch (e) {}
+                    }
+
+                    // HTML兜底：标题
+                    if (!title) {
+                        try {
+                            const titleEls = document.querySelectorAll("h1")
+                            for (const node of titleEls) {
+                                const t = this.cleanText(node.text)
+                                if (t && t.length < 100) {
+                                    title = t
+                                    break
+                                }
+                            }
+                        } catch (e) {}
+                        if (!title) title = comicId
+                    }
+
+                    // HTML兜底：封面
+                    if (!cover) {
+                        try {
+                            const coverEl = document.querySelector(".cover img, img[itemprop=image], .detail-cover img")
+                            if (coverEl) cover = this.imageUrl(coverEl)
+                        } catch (e) {}
+                    }
+
+                    // HTML兜底：简介
+                    if (!description) {
+                        try {
+                            const metas = document.querySelectorAll("meta")
+                            for (const m of metas) {
+                                const property = m.attributes["name"] || m.attributes["property"] || ""
+                                if (/description/i.test(property)) {
+                                    description = this.cleanText(m.attributes["content"] || "")
+                                    break
+                                }
+                            }
+                        } catch (e) {}
+                    }
+
+                    // HTML兜底：更新时间（从body文本中匹配"更新时间：XXX"）
+                    if (!updateTime) {
+                        try {
+                            const timeMatch = bodyText.match(/更新时间[：:]\s*([0-9\-\/]+)/)
+                            if (timeMatch) {
+                                updateTime = this.cleanText(timeMatch[1])
+                            }
+                        } catch (e) {}
+                    }
+
+                    return new ComicDetails({
+                        title: String(title || comicId),
+                        subtitle: String(author || ""),
+                        subTitle: String(author || ""),
+                        cover: String(cover || ""),
+                        description: String(description || ""),
+                        tags: {
+                            "标签": Array.isArray(tags) ? tags.map(t => String(t || "")) : []
+                        },
+                        chapters: chapters,
+                        isFavorite: false,
+                        subId: String(comicId),
+                        thumbnails: cover ? [String(cover)] : [],
+                        recommend: [],
+                        updateTime: String(updateTime || ""),
+                        url: String(this.baseUrl + "/comic.php?id=" + comicId)
+                    })
+                } finally {
+                    document.dispose()
+                }
+            } catch (e) {
+                return this._emptyDetails(id)
+            }
         },
 
-        /**
-         * rate a comic
-         * @param id
-         * @param rating {number} - [0-10] app use 5 stars, 1 rating = 0.5 stars,
-         * @returns {Promise<any>} - return any value to indicate success
-         */
-        starRating: async (id, rating) => {
-            // TODO: implement star rating
-        },
-
-        /**
-         * load images of a chapter
-         * @param comicId {string}
-         * @param epId {string?}
-         * @returns {Promise<{images: string[]}>}
-         */
         loadEp: async (comicId, epId) => {
-            if (!epId) {
-                throw new Error("No chapter id provided")
+            try {
+                if (!epId) return { images: [] }
+
+                // 标准化章节ID
+                let chapterId = ""
+                const epStr = String(epId).trim()
+
+                // 形态1：完整URL
+                const urlMatch = epStr.match(/[?&]id=(\d+)/i)
+                if (urlMatch) {
+                    chapterId = urlMatch[1]
+                }
+                // 形态2：组合ID comicId|chapterId
+                else if (epStr.includes("|")) {
+                    const parts = epStr.split("|")
+                    chapterId = parts[parts.length - 1].match(/\d+/)?.[0] || ""
+                }
+                // 形态3：纯数字ID
+                else if (/^\d+$/.test(epStr)) {
+                    chapterId = epStr
+                }
+
+                if (!chapterId) {
+                    return { images: [] }
+                }
+
+                const url = this.baseUrl + "/chapter.php?id=" + chapterId
+                let res = await Network.get(url)
+                if (res.status !== 200) {
+                    return { images: [] }
+                }
+
+                const html = res.body
+                const images = []
+                const seen = new Set()
+
+                // ========== 第一步：从JSON-LD提取图片 ==========
+                const jsonLdList = this.extractJsonLd(html)
+                for (const data of jsonLdList) {
+                    const graph = data["@graph"] || [data]
+                    for (const item of graph) {
+                        if (item["@type"] === "ItemList" && Array.isArray(item.itemListElement)) {
+                            for (const listItem of item.itemListElement) {
+                                try {
+                                    let imgUrl = ""
+                                    if (listItem.item && listItem.item.url) {
+                                        imgUrl = listItem.item.url
+                                    } else if (listItem.url) {
+                                        imgUrl = listItem.url
+                                    }
+                                    if (imgUrl) {
+                                        const absolute = this.absoluteUrl(imgUrl)
+                                        if (absolute && !seen.has(absolute) && /\.(webp|jpg|jpeg|png|gif)/i.test(absolute)) {
+                                            seen.add(absolute)
+                                            images.push(String(absolute))
+                                        }
+                                    }
+                                } catch (e) {}
+                            }
+                        }
+                    }
+                }
+
+                // ========== 第二步：从HTML提取图片（兜底+补充） ==========
+                try {
+                    const document = new HtmlDocument(html)
+                    try {
+                        // 使用正确的选择器：.reading-image 和 [data-reader-images] img
+                        const imgElements = document.querySelectorAll(".reading-image, [data-reader-images] img, .reader-content img, .manga-imgs img, #manga-imgs img, .chapter-content img, .main-body img")
+                        for (const img of imgElements) {
+                            try {
+                                let src = img.attributes.src || img.attributes["data-src"] || img.attributes["data-original"] || ""
+                                if (src) {
+                                    const absolute = this.absoluteUrl(src)
+                                    if (absolute && !seen.has(absolute) && /\.(webp|jpg|jpeg|png|gif)/i.test(absolute) && !/loading|placeholder|logo|icon|cover/i.test(absolute)) {
+                                        seen.add(absolute)
+                                        images.push(String(absolute))
+                                    }
+                                }
+                            } catch (e) {}
+                        }
+                    } finally {
+                        document.dispose()
+                    }
+                } catch (e) {}
+
+                // ========== 第三步：通过总页数和URL规律补全图片 ==========
+                // 从meta description提取总页数："本章共6张漫画图片"
+                let totalPages = 0
+                try {
+                    const metaMatch = html.match(/本章共\s*(\d+)\s*张/)
+                    if (metaMatch) {
+                        totalPages = parseInt(metaMatch[1])
+                    }
+                } catch (e) {}
+
+                // 如果有总页数且已有至少一张图片，通过URL规律生成所有图片
+                if (totalPages > 0 && images.length > 0 && images.length < totalPages) {
+                    try {
+                        // 从第一张图片URL提取基础路径和扩展名
+                        // 格式：https://img.guazicdn.com/mh5/comics/chapters/yirenzhixia/260717/805_1.webp
+                        const firstImg = images[0]
+                        const baseMatch = firstImg.match(/^(.+?)_(\d+)\.(webp|jpg|jpeg|png|gif)$/i)
+                        if (baseMatch) {
+                            const basePath = baseMatch[1]
+                            const ext = baseMatch[3]
+                            // 生成所有页码的图片URL
+                            for (let i = 1; i <= totalPages; i++) {
+                                const generatedUrl = `${basePath}_${i}.${ext}`
+                                if (!seen.has(generatedUrl)) {
+                                    seen.add(generatedUrl)
+                                    images.push(String(generatedUrl))
+                                }
+                            }
+                        }
+                    } catch (e) {}
+                }
+
+                // 按页码排序（确保顺序正确）
+                try {
+                    images.sort((a, b) => {
+                        const aMatch = a.match(/_(\d+)\./)
+                        const bMatch = b.match(/_(\d+)\./)
+                        if (aMatch && bMatch) {
+                            return parseInt(aMatch[1]) - parseInt(bMatch[1])
+                        }
+                        return 0
+                    })
+                } catch (e) {}
+
+                return { images }
+            } catch (e) {
+                return { images: [] }
             }
-            let res = await fetch(`https://api.mangadex.org/at-home/server/${epId}`)
-            if (!res.ok) {
-                throw new Error("Network response was not ok")
-            }
-            let data = await res.json()
-            let baseUrl = data['baseUrl']
-            let images = []
-            for (let image of data['chapter']['data']) {
-                images.push(`${baseUrl}/data/${data['chapter']['hash']}/${image}`)
-            }
+        },
+
+        onImageLoad: (url, comicId, epId) => {
             return {
-                images: images
+                headers: {
+                    "Referer": "https://www.guazimanhua.com/",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
             }
         },
-        /**
-         * [Optional] load comments
-         *
-         * Since app version 1.0.6, rich text is supported in comments.
-         * Following html tags are supported: ['a', 'b', 'i', 'u', 's', 'br', 'span', 'img'].
-         * span tag supports style attribute, but only support font-weight, font-style, text-decoration.
-         * All images will be placed at the end of the comment.
-         * Auto link detection is enabled, but only http/https links are supported.
-         * @param comicId {string}
-         * @param subId {string?} - ComicDetails.subId
-         * @param page {number}
-         * @param replyTo {string?} - commentId to reply, not null when reply to a comment
-         * @returns {Promise<{comments: Comment[], maxPage: number?}>}
-         */
-        loadComments: async (comicId, subId, page, replyTo) => {
-            throw new Error("Not implemented")
-        },
-        /**
-         * [Optional] send a comment, return any value to indicate success
-         * @param comicId {string}
-         * @param subId {string?} - ComicDetails.subId
-         * @param content {string}
-         * @param replyTo {string?} - commentId to reply, not null when reply to a comment
-         * @returns {Promise<any>}
-         */
-        sendComment: async (comicId, subId, content, replyTo) => {
-            throw new Error("Not implemented")
-        },
-        /**
-         * [Optional] Handle tag click event
-         * @param namespace {string}
-         * @param tag {string}
-         * @returns {PageJumpTarget}
-         */
-        onClickTag: (namespace, tag) => {
-            tag = tag.replaceAll(' ', '_')
-            let keyword = tag
-            if (namespace === "Tags") {
-                keyword = `tag:${tag}`
-            } else if (namespace === "Authors") {
-                keyword = `author:${tag}`
-            } else if (namespace === "Artists") {
-                keyword = `artist:${tag}`
-            }
+
+        onThumbnailLoad: (url) => {
             return {
-                page: "search",
-                attributes: {
-                    'keyword': keyword,
-                },
+                headers: {
+                    "Referer": "https://www.guazimanhua.com/",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                }
             }
         },
+
+        idMatch: "^https?://(?:www\\.)?guazimanhua\\.com/comic\\.php\\?id=\\d+$",
+
+        link: {
+            domains: [
+                "www.guazimanhua.com",
+                "guazimanhua.com"
+            ],
+            linkToId: (url) => {
+                let m = String(url).match(/guazimanhua\.com\/comic\.php\?id=(\d+)/i)
+                return m ? m[1] : null
+            }
+        }
     }
 
-    settings = {}
+    // ========== 空详情兜底 ==========
 
-    // [Optional] translations for the strings in this config
-    translation = {
-        'zh_CN': {},
-        'zh_TW': {},
-        'en': {}
+    _emptyDetails(comicId) {
+        const safeId = String(comicId || "")
+        return new ComicDetails({
+            title: safeId,
+            subtitle: "",
+            subTitle: "",
+            cover: "",
+            description: "",
+            tags: { "标签": [] },
+            chapters: new Map(),
+            isFavorite: false,
+            subId: safeId,
+            thumbnails: [],
+            recommend: [],
+            updateTime: "",
+            url: ""
+        })
     }
-
-    tags = {"Oneshot":"0234a31e-a729-4e28-9d6a-3f87c4966b9e","Thriller":"07251805-a27e-4d59-b488-f0bfbec15168","Award Winning":"0a39b5a1-b235-4886-a747-1d05d216532d","Reincarnation":"0bc90acb-ccc1-44ca-a34a-b9f3a73259d0","Sci-Fi":"256c8bd9-4904-4360-bf4f-508a76d67183","Time Travel":"292e862b-2d17-4062-90a2-0356caa4ae27","Genderswap":"2bd2e8d0-f146-434a-9b51-fc9ff2c5fe6a","Loli":"2d1f5d56-a1e5-4d0d-a961-2193588b08ec","Traditional Games":"31932a7e-5b8e-49a6-9f12-2afa39dc544c","Official Colored":"320831a8-4026-470b-94f6-8353740e6f04","Historical":"33771934-028e-4cb3-8744-691e866a923e","Monsters":"36fd93ea-e8b8-445e-b836-358f02b3d33d","Action":"391b0423-d847-456f-aff0-8b0cfc03066b","Demons":"39730448-9a5f-48a2-85b0-a70db87b1233","Psychological":"3b60b75c-a2d7-4860-ab56-05f391bb889c","Ghosts":"3bb26d85-09d5-4d2e-880c-c34b974339e9","Animals":"3de8c75d-8ee3-48ff-98ee-e20a65c86451","Long Strip":"3e2b8dae-350e-4ab8-a8ce-016e844b9f0d","Romance":"423e2eae-a7a2-4a8b-ac03-a8351462d71d","Ninja":"489dd859-9b61-4c37-af75-5b18e88daafc","Comedy":"4d32cc48-9f00-4cca-9b5a-a839f0764984","Mecha":"50880a9d-5440-4732-9afb-8f457127e836","Anthology":"51d83883-4103-437c-b4b1-731cb73d786c","Boys' Love":"5920b825-4181-4a17-beeb-9918b0ff7a30","Incest":"5bd0e105-4481-44ca-b6e7-7544da56b1a3","Crime":"5ca48985-9a9d-4bd8-be29-80dc0303db72","Survival":"5fff9cde-849c-4d78-aab0-0d52b2ee1d25","Zombies":"631ef465-9aba-4afb-b0fc-ea10efe274a8","Reverse Harem":"65761a2a-415e-47f3-bef2-a9dababba7a6","Sports":"69964a64-2f90-4d33-beeb-f3ed2875eb4c","Superhero":"7064a261-a137-4d3a-8848-2d385de3a99c","Martial Arts":"799c202e-7daa-44eb-9cf7-8a3c0441531e","Fan Colored":"7b2ce280-79ef-4c09-9b58-12b7c23a9b78","Samurai":"81183756-1453-4c81-aa9e-f6e1b63be016","Magical Girls":"81c836c9-914a-4eca-981a-560dad663e73","Mafia":"85daba54-a71c-4554-8a28-9901a8b0afad","Adventure":"87cc87cd-a395-47af-b27a-93258283bbc6","Self-Published":"891cf039-b895-47f0-9229-bef4c96eccd4","Virtual Reality":"8c86611e-fab7-4986-9dec-d1a2f44acdd5","Office Workers":"92d6d951-ca5e-429c-ac78-451071cbf064","Video Games":"9438db5a-7e2a-4ac0-b39e-e0d95a34b8a8","Post-Apocalyptic":"9467335a-1b83-4497-9231-765337a00b96","Sexual Violence":"97893a4c-12af-4dac-b6be-0dffb353568e","Crossdressing":"9ab53f92-3eed-4e9b-903a-917c86035ee3","Magic":"a1f53773-c69a-4ce5-8cab-fffcd90b1565","Girls' Love":"a3c67850-4684-404e-9b7f-c69850ee5da6","Harem":"aafb99c1-7f60-43fa-b75f-fc9502ce29c7","Military":"ac72833b-c4e9-4878-b9db-6c8a4a99444a","Wuxia":"acc803a4-c95a-4c22-86fc-eb6b582d82a2","Isekai":"ace04997-f6bd-436e-b261-779182193d3d","4-Koma":"b11fda93-8f1d-4bef-b2ed-8803d3733170","Doujinshi":"b13b2a48-c720-44a9-9c77-39c9979373fb","Philosophical":"b1e97889-25b4-4258-b28b-cd7f4d28ea9b","Gore":"b29d6a3d-1569-4e7a-8caf-7557bc92cd5d","Drama":"b9af3a63-f058-46de-a9a0-e0c13906197a","Medical":"c8cbe35b-1b2b-4a3f-9c37-db84c4514856","School Life":"caaa44eb-cd40-4177-b930-79d3ef2afe87","Horror":"cdad7e68-1419-41dd-bdce-27753074a640","Fantasy":"cdc58593-87dd-415e-bbc0-2ec27bf404cc","Villainess":"d14322ac-4d6f-4e9b-afd9-629d5f4d8a41","Vampires":"d7d1730f-6eb0-4ba6-9437-602cac38664c","Delinquents":"da2d50ca-3018-4cc0-ac7a-6b7d472a29ea","Monster Girls":"dd1f77c5-dea9-4e2b-97ae-224af09caf99","Shota":"ddefd648-5140-4e5f-ba18-4eca4071d19b","Police":"df33b754-73a3-4c54-80e6-1a74a8058539","Web Comic":"e197df38-d0e7-43b5-9b09-2842d0c326dd","Slice of Life":"e5301a23-ebd9-49dd-a0cb-2add944c7fe9","Aliens":"e64f6742-c834-471d-8d72-dd51fc02b835","Cooking":"ea2bc92d-1c26-4930-9b7c-d5c0dc1b6869","Supernatural":"eabc5b4c-6aff-42f3-b657-3e90cbd00b75","Mystery":"ee968100-4191-4968-93d3-f82d72be7e46","Adaptation":"f4122d1c-3b44-44d0-9936-ff7502c39ad3","Music":"f42fbf9e-188a-447b-9fdc-f19dc1e4d685","Full Color":"f5ba408b-0e7a-484d-8d49-4e9125ac96de","Tragedy":"f8f62932-27da-4fe4-8ee1-6779a8c5edba","Gyaru":"fad12b5e-68ba-460e-b933-9ae8318f5b65"}
-
-    // [authors] and [artists] are dynamic map
-    authors = {}
-    artists = {}
 }
