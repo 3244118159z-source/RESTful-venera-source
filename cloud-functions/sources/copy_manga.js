@@ -242,3 +242,4 @@ class ManWaBa extends ComicSource {
     onImageLoad: (url, comicId, epId) => this.imageLoadConfig(url),
     onThumbnailLoad: (url) => this.imageLoadConfig(url)
   };
+}
